@@ -4,6 +4,7 @@ import {
   BarChart2,
   BellOff,
   Briefcase,
+  Check,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -20,9 +21,21 @@ import SignalCard from './components/dashboard/SignalCard';
 import StockTable from './components/dashboard/StockTable';
 import TickerSearch from './components/dashboard/TickerSearch';
 import ChartModal from './components/layout/ChartModal';
-import NewsModal from './components/layout/NewsModal'; // IMPORT NEWS MODAL
+import NewsModal from './components/layout/NewsModal';
 import { api } from './services/api';
 import { formatTime, generateSpeechText } from './utils/speech';
+
+// --- CONSTANTS ---
+const REFRESH_OPTIONS = [
+  { label: '30s', value: 30 },
+  { label: '1m', value: 60 },
+  { label: '2m', value: 120 },
+  { label: '5m', value: 300 },
+  { label: '10m', value: 600 },
+  { label: '15m', value: 900 },
+  { label: '1h', value: 3600 },
+  { label: '4h', value: 14400 },
+];
 
 function App() {
   const [data, setData] = useState([]);
@@ -34,12 +47,17 @@ function App() {
   const [refreshRate, setRefreshRate] = useState(60); 
   const [countdown, setCountdown] = useState(60);
   const [audioEnabled, setAudioEnabled] = useState(false);
+  
+  // Dropdown States
   const [showSettings, setShowSettings] = useState(false);
+  const [isTimerOpen, setIsTimerOpen] = useState(false); // <--- NEW STATE
+
   const [selectedStock, setSelectedStock] = useState(null);
-  const [viewingNewsTicker, setViewingNewsTicker] = useState(null); // NEWS STATE
+  const [viewingNewsTicker, setViewingNewsTicker] = useState(null);
   const [speakingTicker, setSpeakingTicker] = useState(null); 
    
   const settingsRef = useRef(null);
+  const timerRef = useRef(null); // <--- NEW REF
 
   // --- SETTINGS STATE ---
   const [audioFilters, setAudioFilters] = useState(() => {
@@ -60,16 +78,21 @@ function App() {
   useEffect(() => { localStorage.setItem('audioFilters', JSON.stringify(audioFilters)); }, [audioFilters]);
   useEffect(() => { localStorage.setItem('speechConfig', JSON.stringify(speechConfig)); }, [speechConfig]);
 
-  // --- CLICK OUTSIDE SETTINGS ---
+  // --- CLICK OUTSIDE HANDLER (Combined) ---
   useEffect(() => {
     function handleClickOutside(event) {
+      // Close Settings
       if (settingsRef.current && !settingsRef.current.contains(event.target)) {
         setShowSettings(false);
+      }
+      // Close Timer
+      if (timerRef.current && !timerRef.current.contains(event.target)) {
+        setIsTimerOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [settingsRef]);
+  }, [settingsRef, timerRef]);
 
   // --- SORTING LOGIC ---
   const checkIsSpoken = useCallback((d) => {
@@ -192,31 +215,60 @@ function App() {
     }
   };
 
+  const handleRateChange = (newRate) => {
+    setRefreshRate(newRate);
+    setCountdown(newRate);
+    setTimeout(fetchData, 100);
+    setIsTimerOpen(false); // Close dropdown on select
+  };
+
   // --- FETCH ---
   const fetchData = useCallback(async () => {
     if (data.length === 0) setLoading(true);
     try {
       const res = await api.scan();
       const rawData = res.data.data;
+      const settings = res.data.settings;
 
-      // Ensure news property exists for each stock
-      const enrichedData = rawData.map(item => ({
-        ...item,
-        news: item.news || [] // Add fallback for missing news
-      }));
+      const processedData = rawData.map(item => {
+        const prev = prevDataRef.current.get(item.symbol);
+        let priceChange = 0;
+        let volChange = 0;
+        if (prev) {
+            if (prev.price && prev.price > 0) priceChange = ((item.price - prev.price) / prev.price) * 100;
+            if (prev.volume && prev.volume > 0) volChange = ((item.volume - prev.volume) / prev.volume) * 100;
+        }
+        return { ...item, priceChange, volChange };
+      });
 
-      setData(enrichedData);
-      setLoading(false);
-    } catch (e) {
-      console.error("Failed to fetch data", e);
-      setLoading(false);
-    }
-  }, [data]);
+      const newMap = new Map();
+      processedData.forEach(d => newMap.set(d.symbol, d));
+      prevDataRef.current = newMap;
+
+      setData(processedData);
+      setLastUpdated(new Date().toLocaleTimeString());
+      setCountdown(refreshRate);
+       
+      const dbIgnoredStocks = new Set();
+      const dbIgnoredSectors = new Set();
+      processedData.forEach(d => {
+          if (d.is_ignored) dbIgnoredStocks.add(d.symbol);
+          if (d.is_sector_ignored) dbIgnoredSectors.add(d.sector);
+      });
+      const dbIgnoredSections = new Set(settings.ignored_sections);
+
+      setIgnoredStocks(dbIgnoredStocks);
+      setIgnoredSectors(dbIgnoredSectors);
+      setIgnoredSections(dbIgnoredSections);
+
+      handleSpeech(processedData, false, dbIgnoredSections);
+    } catch (err) { console.error(err); }
+    setLoading(false);
+  }, [refreshRate, handleSpeech, data.length]);
 
   useEffect(() => { fetchData(); }, []); 
   useEffect(() => { const i = setInterval(() => fetchData(), refreshRate * 1000); return () => clearInterval(i); }, [refreshRate, fetchData]); 
   useEffect(() => { const t = setInterval(() => setCountdown((p) => (p > 0 ? p - 1 : 0)), 1000); return () => clearInterval(t); }, []);
-  const handleRateChange = (e) => { const r = parseInt(e.target.value); setRefreshRate(r); setCountdown(r); setTimeout(fetchData, 100); };
 
 
   // --- DATA PREPARATION ---
@@ -241,19 +293,13 @@ function App() {
   const SkeletonCards = () => <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">{[...Array(4)].map((_, i) => <div key={i} className="h-40 rounded-lg bg-slate-900/50 border border-slate-800 animate-pulse p-4"></div>)}</div>;
   const SkeletonTable = () => <div className="p-4 space-y-3">{[...Array(5)].map((_, i) => <div key={i} className="h-8 w-full bg-slate-900 rounded animate-pulse"></div>)}</div>;
 
+  // --- RENDER ---
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 font-sans selection:bg-indigo-500/30 pb-20">
        
       <AnimatePresence>
         {selectedStock && <ChartModal symbol={selectedStock} onClose={() => setSelectedStock(null)} />}
-        {/* NEW: NEWS MODAL */}
-        {viewingNewsTicker && 
-          <NewsModal
-            ticker={viewingNewsTicker}
-            onClose={() => setViewingNewsTicker(null)}
-            newsData={viewingNewsTicker ? data.find(d => d.symbol === viewingNewsTicker)?.news || [] : []} // Validate news data
-          />
-        }
+        {viewingNewsTicker && <NewsModal symbol={viewingNewsTicker} onClose={() => setViewingNewsTicker(null)} />}
       </AnimatePresence>
 
       <nav className="sticky top-0 z-50 bg-[#020617]/95 backdrop-blur-md border-b border-slate-800/80 shadow-lg h-16">
@@ -266,6 +312,7 @@ function App() {
             </div>
 
             <div className="flex items-center gap-3">
+              {/* Audio & Settings Group */}
               <div className="flex items-center bg-slate-900/50 rounded-md border border-slate-800 p-1">
                 <button 
                     onClick={toggleAudio} 
@@ -304,11 +351,46 @@ function App() {
                 </div>
               </div>
               
+              {/* --- TIMER DROPDOWN (UPDATED) --- */}
               <div className="hidden md:flex items-center bg-slate-900/50 rounded border border-slate-800">
-                <div className="flex flex-col items-end px-3 py-1 border-r border-slate-800"><span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Next Scan</span><span className={`text-xs font-mono font-bold ${countdown < 10 ? 'text-rose-400' : 'text-emerald-400'}`}>{formatTime(countdown)}</span></div>
-                <div className="relative group px-2" title="Change Refresh Rate">
-                    <Clock size={14} className="text-slate-500 absolute left-2 top-2 pointer-events-none"/>
-                    <select value={refreshRate} onChange={handleRateChange} className="bg-transparent text-xs font-bold text-slate-400 pl-6 pr-1 py-1.5 outline-none cursor-pointer hover:text-white appearance-none"><option value={30}>30s</option><option value={60}>1m</option><option value={120}>2m</option><option value={300}>5m</option></select>
+                <div className="flex flex-col items-end px-3 py-1 border-r border-slate-800">
+                    <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Next Scan</span>
+                    <span className={`text-xs font-mono font-bold ${countdown < 10 ? 'text-rose-400' : 'text-emerald-400'}`}>{formatTime(countdown)}</span>
+                </div>
+                
+                <div className="relative group" ref={timerRef}>
+                    <button 
+                        onClick={() => setIsTimerOpen(!isTimerOpen)}
+                        className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors"
+                        title="Change Refresh Rate"
+                    >
+                        <Clock size={14} />
+                        <span>{REFRESH_OPTIONS.find(o => o.value === refreshRate)?.label || '1m'}</span>
+                        <ChevronDown size={10} className={`transition-transform ${isTimerOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {/* Custom Timer Dropdown */}
+                    <AnimatePresence>
+                        {isTimerOpen && (
+                            <motion.ul 
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: 10 }}
+                                className="absolute top-full right-0 mt-2 w-24 bg-[#0f172a] border border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden"
+                            >
+                                {REFRESH_OPTIONS.map((opt) => (
+                                    <li 
+                                        key={opt.label}
+                                        onClick={() => handleRateChange(opt.value)}
+                                        className="flex items-center justify-between px-3 py-2 hover:bg-slate-800 cursor-pointer text-xs text-slate-300 hover:text-white border-b border-slate-800/50 last:border-0"
+                                    >
+                                        <span>{opt.label}</span>
+                                        {refreshRate === opt.value && <Check size={12} className="text-emerald-400" />}
+                                    </li>
+                                ))}
+                            </motion.ul>
+                        )}
+                    </AnimatePresence>
                 </div>
               </div>
                
@@ -350,7 +432,7 @@ function App() {
                     onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} 
                     onToggleIgnore={toggleIgnoreStock} 
                     isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)}
-                    onOpenNews={(sym) => setViewingNewsTicker(sym)} // PASS HANDLER
+                    onOpenNews={(sym) => setViewingNewsTicker(sym)} 
                   />
                 ))}
               </div>
@@ -369,7 +451,7 @@ function App() {
                     onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} 
                     onToggleIgnore={toggleIgnoreStock} 
                     isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)}
-                    onOpenNews={(sym) => setViewingNewsTicker(sym)} // PASS HANDLER
+                    onOpenNews={(sym) => setViewingNewsTicker(sym)} 
                   />
                 ))}
               </div>
@@ -385,7 +467,7 @@ function App() {
                 onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} 
                 ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('portfolio')}
                 onOpenChart={setSelectedStock}
-                onOpenNews={(sym) => setViewingNewsTicker(sym)} // PASS HANDLER
+                onOpenNews={(sym) => setViewingNewsTicker(sym)} 
             />
           )}
         </CollapsibleSection>
@@ -397,7 +479,7 @@ function App() {
                 onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} 
                 ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('watchlist')} 
                 onOpenChart={setSelectedStock}
-                onOpenNews={(sym) => setViewingNewsTicker(sym)} // PASS HANDLER
+                onOpenNews={(sym) => setViewingNewsTicker(sym)} 
             />
           )}
         </CollapsibleSection>
@@ -409,7 +491,7 @@ function App() {
                 onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} onToggleSectorIgnore={toggleIgnoreSector} 
                 ignoredStocks={ignoredStocks} ignoredSectors={ignoredSectors} sectionIgnored={ignoredSections.has('market')} 
                 onOpenChart={setSelectedStock}
-                onOpenNews={(sym) => setViewingNewsTicker(sym)} // PASS HANDLER
+                onOpenNews={(sym) => setViewingNewsTicker(sym)} 
               />
           </CollapsibleSection>
         )}
