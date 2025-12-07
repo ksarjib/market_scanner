@@ -14,7 +14,7 @@
      ```
 2. Open a terminal and navigate to the project directory:
    ```bash
-   cd /path/to/Stocks
+   cd /path/to/market_scanner
    ```
 3. Create and activate a virtual environment:
    ```bash
@@ -23,11 +23,11 @@
    ```
 4. Install the required dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install yfinance pandas tabulate uvicorn fastapi
    ```
-5. Run the script:
+5. Run the backend server:
    ```bash
-   python3 market_scanner.py
+   uvicorn backend:app --reload
    ```
 
 ### Windows
@@ -40,7 +40,7 @@
      ```
 2. Open Command Prompt or PowerShell and navigate to the project directory:
    ```cmd
-   cd \path\to\Stocks
+   cd \path\to\market_scanner
    ```
 3. Create and activate a virtual environment:
    ```cmd
@@ -49,11 +49,11 @@
    ```
 4. Install the required dependencies:
    ```cmd
-   pip install -r requirements.txt
+   pip install yfinance pandas tabulate uvicorn fastapi
    ```
-5. Run the script:
+5. Run the backend server:
    ```cmd
-   python market_scanner.py
+   uvicorn backend:app --reload
    ```
 
 ---
@@ -96,12 +96,7 @@ source venv/bin/activate  # macOS/Linux
 
 ### 3. Install Dependencies
 ```bash
-pip install -r requirements.txt
-```
-
-If you don't have a `requirements.txt` file, manually install the required packages:
-```bash
-pip install yfinance pandas tabulate
+pip install yfinance pandas tabulate uvicorn fastapi
 ```
 
 ## Configuration
