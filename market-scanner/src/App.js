@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown, ChevronRight, Clock,
   Eye, EyeOff,
+  Layers,
   RefreshCw, Settings, Volume2, VolumeX, Zap
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -12,8 +13,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import SignalCard from './components/dashboard/SignalCard';
 import StockTable from './components/dashboard/StockTable';
 import TickerSearch from './components/dashboard/TickerSearch';
+import WheelHistory from './components/dashboard/WheelHistory';
+import WheelSignalCard from './components/dashboard/WheelSignalCard';
 import ChartModal from './components/layout/ChartModal';
 import NewsModal from './components/layout/NewsModal';
+
 import { api } from './services/api';
 import { formatTime, generateSpeechText } from './utils/speech';
 
@@ -24,25 +28,35 @@ const REFRESH_OPTIONS = [
   { label: '1h', value: 3600 }, { label: '4h', value: 14400 },
 ];
 
+const STRATEGIES = [
+    { id: 'MOMENTUM', label: 'Momentum & Trend' },
+    { id: 'WHEEL', label: 'The Wheel Strategy' }
+];
+
 function App() {
   const [data, setData] = useState([]);
+  const [wheelHistory, setWheelHistory] = useState([]); 
   const [loading, setLoading] = useState(true);
+  
   const prevDataRef = useRef(new Map());
 
   const [lastUpdated, setLastUpdated] = useState("Scanning...");
   const [refreshRate, setRefreshRate] = useState(60); 
   const [countdown, setCountdown] = useState(60);
   const [audioEnabled, setAudioEnabled] = useState(false);
+  const [currentStrategy, setCurrentStrategy] = useState('MOMENTUM'); 
   
   // UI States
   const [showSettings, setShowSettings] = useState(false);
   const [isTimerOpen, setIsTimerOpen] = useState(false);
+  const [isStrategyOpen, setIsStrategyOpen] = useState(false); 
   const [selectedStock, setSelectedStock] = useState(null);
   const [viewingNewsTicker, setViewingNewsTicker] = useState(null);
   const [speakingTicker, setSpeakingTicker] = useState(null); 
    
   const settingsRef = useRef(null);
   const timerRef = useRef(null);
+  const strategyRef = useRef(null);
 
   // --- SETTINGS STATE ---
   const [audioFilters, setAudioFilters] = useState(() => {
@@ -68,10 +82,11 @@ function App() {
     function handleClickOutside(event) {
       if (settingsRef.current && !settingsRef.current.contains(event.target)) setShowSettings(false);
       if (timerRef.current && !timerRef.current.contains(event.target)) setIsTimerOpen(false);
+      if (strategyRef.current && !strategyRef.current.contains(event.target)) setIsStrategyOpen(false);
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [settingsRef, timerRef]);
+  }, [settingsRef, timerRef, strategyRef]);
 
   // --- SORTING LOGIC ---
   const checkIsSpoken = useCallback((d) => {
@@ -124,6 +139,7 @@ function App() {
     signalsToAnnounce.sort(sortStocksByPriority);
 
     if (signalsToAnnounce.length > 0) {
+      console.log(`[APP] 🗣️ Announcing ${signalsToAnnounce.length} signals.`);
       const summary = new SpeechSynthesisUtterance(`Found ${signalsToAnnounce.length} alerts.`);
       summary.rate = 1.1; 
       summary.onend = () => speakQueue(signalsToAnnounce);
@@ -131,38 +147,107 @@ function App() {
     }
   }, [audioEnabled, audioFilters, speechConfig, sortStocksByPriority]);
 
-  // --- ACTIONS ---
-  
-  // 1. ADD HANDLER (Now handles both targets explicitly)
+  // --- FETCH ---
+  const fetchData = useCallback(async () => {
+    // Only show loading spinner on empty state or major refresh
+    if (data.length === 0) setLoading(true); 
+    
+    try {
+      console.log(`[APP] 📥 Fetching data... (Strategy: ${currentStrategy})`);
+      const res = await api.scan(currentStrategy);
+      const rawData = res.data.data || [];
+      const historyData = res.data.history || [];
+      const settings = res.data.settings || {};
+
+      console.log(`[APP] ✅ Data received: ${rawData.length} items`);
+
+      const processedData = rawData.map(item => {
+        const prev = prevDataRef.current.get(item.symbol);
+        let priceChange = 0; let volChange = 0;
+        if (prev) {
+            if (prev.price) priceChange = ((item.price - prev.price) / prev.price) * 100;
+            if (prev.volume) volChange = ((item.volume - prev.volume) / prev.volume) * 100;
+        }
+        return { ...item, priceChange, volChange };
+      });
+
+      const newMap = new Map();
+      processedData.forEach(d => newMap.set(d.symbol, d));
+      prevDataRef.current = newMap;
+
+      setData(processedData);
+      setWheelHistory(historyData); 
+      setLastUpdated(new Date().toLocaleTimeString());
+      setCountdown(refreshRate); 
+       
+      const dbIgnoredStocks = new Set();
+      const dbIgnoredSectors = new Set();
+      processedData.forEach(d => {
+          if (d.is_ignored) dbIgnoredStocks.add(d.symbol);
+          if (d.is_sector_ignored) dbIgnoredSectors.add(d.sector);
+      });
+      const dbIgnoredSections = new Set(settings.ignored_sections);
+
+      setIgnoredStocks(dbIgnoredStocks);
+      setIgnoredSectors(dbIgnoredSectors);
+      setIgnoredSections(dbIgnoredSections);
+
+      if (currentStrategy === 'MOMENTUM') {
+          handleSpeech(processedData, false, dbIgnoredSections);
+      }
+    } catch (err) { 
+        console.error("[APP] ❌ Fetch Error:", err); 
+    }
+    setLoading(false);
+  }, [refreshRate, handleSpeech, data.length, currentStrategy]);
+
+  // --- EFFECT LOOPS ---
+  useEffect(() => {
+    fetchData(); 
+    const interval = setInterval(fetchData, refreshRate * 1000);
+    const countdownInterval = setInterval(() => setCountdown((p) => (p > 0 ? p - 1 : 0)), 1000);
+    return () => { clearInterval(interval); clearInterval(countdownInterval); };
+  }, [refreshRate, fetchData]); 
+
+  // --- ACTIONS HANDLERS ---
+  const handleStrategyChange = (strat) => {
+      console.log(`[APP] Switching strategy to: ${strat}`);
+      setCurrentStrategy(strat);
+      setIsStrategyOpen(false);
+      setLoading(true);
+      setData([]); // Clear data to trigger skeleton loader
+      setTimeout(fetchData, 100);
+  };
+
+  const handleLogWheelTrade = async (trade) => {
+      await api.logWheelTrade(trade);
+      fetchData(); 
+  };
+
   const handleAddTicker = async (symbol, target) => {
     if (!symbol) return;
     try {
-        if (target === 'portfolio') {
-            await api.addToPortfolio(symbol);
-        } else {
-            // Default to watchlist
-            await api.addTicker(symbol, 'watchlist');
-        }
-        fetchData(); 
-    } catch (e) { console.error("Failed to add ticker", e); }
+        setLoading(true);
+        if (target === 'portfolio') await api.addToPortfolio(symbol);
+        else await api.addTicker(symbol, 'watchlist');
+        
+        if (target === 'portfolio') await api.addTicker(symbol, 'portfolio');
+        
+        await fetchData(); 
+    } catch (e) { console.error(e); setLoading(false); }
   };
 
-  // 2. REMOVE HANDLER (New: Handles removal based on target)
   const handleRemoveTicker = async (symbol, target) => {
     if (!symbol) return;
     try {
-        if (target === 'portfolio') {
-            await api.removeFromPortfolio(symbol);
-        } else {
-            // Default remove (usually removes from watchlist/master)
-            await api.removeTicker(symbol);
-        }
-        fetchData();
-    } catch (e) { console.error("Failed to remove ticker", e); }
+        setLoading(true);
+        if (target === 'portfolio') await api.removeFromPortfolio(symbol);
+        else await api.removeTicker(symbol);
+        await fetchData();
+    } catch (e) { console.error(e); setLoading(false); }
   };
 
   const togglePortfolio = async (symbol, isInPortfolio) => {
-    setData(prev => prev.map(item => item.symbol === symbol ? { ...item, is_in_portfolio: !isInPortfolio } : item));
     try {
       if (isInPortfolio) await api.removeFromPortfolio(symbol);
       else await api.addToPortfolio(symbol);
@@ -171,7 +256,6 @@ function App() {
   };
 
   const toggleWatchlist = async (symbol, isWatched) => {
-    setData(prev => prev.map(item => item.symbol === symbol ? { ...item, is_watched: !isWatched } : item));
     try {
       if (isWatched) await api.removeTicker(symbol);
       else await api.addTicker(symbol, 'watchlist');
@@ -216,78 +300,26 @@ function App() {
   };
 
   const handleRateChange = (newRate) => {
+    console.log(`[APP] Timer changed to: ${newRate}s`);
     setRefreshRate(parseInt(newRate));
     setCountdown(newRate);
     setTimeout(fetchData, 100);
     setIsTimerOpen(false); 
   };
 
-  // --- FETCH ---
-  const fetchData = useCallback(async () => {
-    if (data.length === 0) setLoading(true);
-    try {
-      const res = await api.scan();
-      const rawData = res.data.data;
-      const settings = res.data.settings;
-
-      const processedData = rawData.map(item => {
-        const prev = prevDataRef.current.get(item.symbol);
-        let priceChange = 0; let volChange = 0;
-        if (prev) {
-            if (prev.price) priceChange = ((item.price - prev.price) / prev.price) * 100;
-            if (prev.volume) volChange = ((item.volume - prev.volume) / prev.volume) * 100;
-        }
-        return { ...item, priceChange, volChange };
-      });
-
-      const newMap = new Map();
-      processedData.forEach(d => newMap.set(d.symbol, d));
-      prevDataRef.current = newMap;
-
-      setData(processedData);
-      setLastUpdated(new Date().toLocaleTimeString());
-      setCountdown(refreshRate); 
-       
-      const dbIgnoredStocks = new Set();
-      const dbIgnoredSectors = new Set();
-      processedData.forEach(d => {
-          if (d.is_ignored) dbIgnoredStocks.add(d.symbol);
-          if (d.is_sector_ignored) dbIgnoredSectors.add(d.sector);
-      });
-      const dbIgnoredSections = new Set(settings.ignored_sections);
-
-      setIgnoredStocks(dbIgnoredStocks);
-      setIgnoredSectors(dbIgnoredSectors);
-      setIgnoredSections(dbIgnoredSections);
-
-      handleSpeech(processedData, false, dbIgnoredSections);
-    } catch (err) { console.error(err); }
-    setLoading(false);
-  }, [refreshRate, handleSpeech, data.length]);
-
-  useEffect(() => {
-    fetchData(); 
-    const interval = setInterval(fetchData, refreshRate * 1000);
-    const countdownInterval = setInterval(() => setCountdown((p) => (p > 0 ? p - 1 : 0)), 1000);
-    return () => { clearInterval(interval); clearInterval(countdownInterval); };
-  }, [refreshRate, fetchData]); 
-
-  // --- DATA PREPARATION ---
-  const activeSignals = data.filter(d => {
-      if (!d.is_buy && !d.is_sell) return false;
-      if (ignoredStocks.has(d.symbol)) return false; 
-      if (ignoredSectors.has(d.sector)) return false;
-      return true;
-  }).sort(sortStocksByPriority);
-
+  // --- DATA FILTERING ---
+  const isMomentum = currentStrategy === 'MOMENTUM';
+  
+  const activeSignals = data.filter(d => (d.is_buy || d.is_sell) && !ignoredStocks.has(d.symbol)).sort(sortStocksByPriority);
   const activeSpoken = activeSignals.filter(s => checkIsSpoken(s));
   const activeSilent = activeSignals.filter(s => !checkIsSpoken(s));
-
+  
   const portfolio = data.filter(d => d.is_in_portfolio).sort(sortStocksByPriority);
   const watchlist = data.filter(d => d.is_watched).sort(sortStocksByPriority);
-  const market = data.filter(d => d.sector !== 'Other' && d.sector !== 'Watchlist' && !d.is_in_portfolio && !d.is_watched).sort(sortStocksByPriority);
+  const market = data.filter(d => !d.is_in_portfolio && !d.is_watched).sort(sortStocksByPriority);
 
-  // --- SETS FOR TICKER SEARCH ---
+  const wheelOpportunities = data.filter(d => d.wheel_suggestion);
+
   const portfolioSet = new Set(portfolio.map(d => d.symbol));
   const watchlistSet = new Set(watchlist.map(d => d.symbol));
 
@@ -306,11 +338,35 @@ function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
             
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-lg border border-white/10 shadow-xl"><Activity size={20} className="text-white" /></div>
-              <div><h1 className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">TERMINAL<span className="text-indigo-500">.PRO</span></h1><p className="text-[10px] text-emerald-400 font-mono tracking-widest uppercase flex items-center gap-1 mt-0.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> System Online</p></div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-lg border border-white/10 shadow-xl"><Activity size={20} className="text-white" /></div>
+                <div className="hidden md:block"><h1 className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">TERMINAL<span className="text-indigo-500">.PRO</span></h1></div>
+              </div>
+
+              {/* STRATEGY SELECTOR */}
+              <div className="relative" ref={strategyRef}>
+                <button onClick={() => setIsStrategyOpen(!isStrategyOpen)} className="flex items-center gap-2 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-md text-xs font-bold text-indigo-300 hover:border-indigo-500 transition-colors">
+                    <Layers size={14} />
+                    <span>{STRATEGIES.find(s => s.id === currentStrategy).label}</span>
+                    <ChevronDown size={12} className={`transition-transform ${isStrategyOpen ? 'rotate-180' : ''}`} />
+                </button>
+                <AnimatePresence>
+                    {isStrategyOpen && (
+                        <motion.ul initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} className="absolute top-full left-0 mt-2 w-48 bg-[#0f172a] border border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                            {STRATEGIES.map(s => (
+                                <li key={s.id} onClick={() => handleStrategyChange(s.id)} className="px-4 py-3 hover:bg-slate-800 cursor-pointer flex items-center justify-between text-xs font-medium text-slate-300 border-b border-slate-800/50 last:border-0">
+                                    {s.label}
+                                    {currentStrategy === s.id && <Check size={14} className="text-emerald-400" />}
+                                </li>
+                            ))}
+                        </motion.ul>
+                    )}
+                </AnimatePresence>
+              </div>
             </div>
 
+            {/* Right Controls */}
             <div className="flex items-center gap-3">
               <div className="flex items-center bg-slate-900/50 rounded-md border border-slate-800 p-1">
                 <button onClick={toggleAudio} className={`p-1.5 rounded transition ${audioEnabled ? 'text-emerald-400' : 'text-rose-400'}`}>{audioEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}</button>
@@ -319,7 +375,19 @@ function App() {
                   <button onClick={() => setShowSettings(!showSettings)} className={`p-1.5 rounded transition hover:text-white ${showSettings ? 'text-indigo-400' : 'text-slate-500'}`}><Settings size={16} /></button>
                   {showSettings && (
                     <div className="absolute top-10 right-0 w-48 bg-slate-900 border border-slate-700 rounded-lg shadow-xl p-3 z-50">
-                      {/* Settings content (omitted for brevity) */}
+                      <div className="text-[10px] font-bold text-slate-500 uppercase mb-2">Voice Alert Filters</div>
+                      <div className="space-y-2">
+                        <label className="flex items-center justify-between text-xs cursor-pointer"><span className="text-slate-300">My Portfolio</span><input type="checkbox" checked={audioFilters.portfolio} onChange={(e) => setAudioFilters({...audioFilters, portfolio: e.target.checked})} className="accent-indigo-500" /></label>
+                        <label className="flex items-center justify-between text-xs cursor-pointer"><span className="text-slate-300">Watchlist</span><input type="checkbox" checked={audioFilters.watchlist} onChange={(e) => setAudioFilters({...audioFilters, watchlist: e.target.checked})} className="accent-indigo-500" /></label>
+                        <label className="flex items-center justify-between text-xs cursor-pointer"><span className="text-slate-300">Market Overview</span><input type="checkbox" checked={audioFilters.market} onChange={(e) => setAudioFilters({...audioFilters, market: e.target.checked})} className="accent-indigo-500" /></label>
+                      </div>
+                      <div className="h-px bg-slate-700 my-2"></div>
+                      <div className="text-[10px] font-bold text-slate-500 uppercase mb-2">Voice Content</div>
+                      <div className="space-y-2">
+                        <label className="flex items-center justify-between text-xs cursor-pointer group"><div className="flex items-center gap-2"><span className="text-slate-300 group-hover:text-white">Price</span></div><input type="checkbox" checked={speechConfig.price} onChange={(e) => setSpeechConfig({...speechConfig, price: e.target.checked})} className="accent-indigo-500" /></label>
+                        <label className="flex items-center justify-between text-xs cursor-pointer group"><div className="flex items-center gap-2"><span className="text-slate-300 group-hover:text-white">Signal Type</span></div><input type="checkbox" checked={speechConfig.signal} onChange={(e) => setSpeechConfig({...speechConfig, signal: e.target.checked})} className="accent-indigo-500" /></label>
+                         <label className="flex items-center justify-between text-xs cursor-pointer group"><div className="flex items-center gap-2"><span className="text-slate-300 group-hover:text-white">Reason</span></div><input type="checkbox" checked={speechConfig.reason} onChange={(e) => setSpeechConfig({...speechConfig, reason: e.target.checked})} className="accent-indigo-500" /></label>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -341,7 +409,6 @@ function App() {
                 </div>
               </div>
                
-              {/* TICKER SEARCH: Added onRemove */}
               <TickerSearch 
                 onAdd={handleAddTicker} 
                 onRemove={handleRemoveTicker} 
@@ -355,37 +422,64 @@ function App() {
         </div>
       </nav>
 
-      {/* Main Content Sections... (No changes to the sections below) */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {(loading && activeSignals.length === 0) ? <SkeletonCards /> : activeSignals.length > 0 && (
-          <CollapsibleSection title="Active Signals" count={activeSignals.length} icon={<Zap className="text-amber-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('signals')} isIgnored={ignoredSections.has('signals')}>
-            <SignalSubsection title="Priority Alerts (Voice Active)" icon={<Volume2 size={12} className="text-emerald-400"/>} data={activeSpoken} defaultOpen={true}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
-                {activeSpoken.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)} onOpenNews={(sym) => setViewingNewsTicker(sym)} />))}
-              </div>
-            </SignalSubsection>
-            <SignalSubsection title="Silent Alerts" icon={<BellOff size={12} className="text-slate-400"/>} data={activeSilent} defaultOpen={true}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
-                {activeSilent.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)} onOpenNews={(sym) => setViewingNewsTicker(sym)} />))}
-              </div>
-            </SignalSubsection>
-          </CollapsibleSection>
+        
+        {isMomentum && (
+            <>
+                {(loading && activeSignals.length === 0) ? <SkeletonCards /> : activeSignals.length > 0 && (
+                  <CollapsibleSection title="Active Signals" count={activeSignals.length} icon={<Zap className="text-amber-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('signals')} isIgnored={ignoredSections.has('signals')}>
+                    <SignalSubsection title="Priority Alerts (Voice Active)" icon={<Volume2 size={12} className="text-emerald-400"/>} data={activeSpoken} defaultOpen={true}>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
+                        {activeSpoken.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)} onOpenNews={(sym) => setViewingNewsTicker(sym)} />))}
+                      </div>
+                    </SignalSubsection>
+                    <SignalSubsection title="Silent Alerts" icon={<BellOff size={12} className="text-slate-400"/>} data={activeSilent} defaultOpen={true}>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
+                        {activeSilent.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)} onOpenNews={(sym) => setViewingNewsTicker(sym)} />))}
+                      </div>
+                    </SignalSubsection>
+                  </CollapsibleSection>
+                )}
+
+                <CollapsibleSection title="My Portfolio" count={portfolio.length} icon={<Briefcase className="text-emerald-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('portfolio')} isIgnored={ignoredSections.has('portfolio')}>
+                  {loading && portfolio.length === 0 ? <SkeletonTable /> : (<StockTable data={portfolio} onRemove={(sym) => togglePortfolio(sym, true)} isPortfolio={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('portfolio')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} />)}
+                </CollapsibleSection>
+
+                <CollapsibleSection title="Watchlist" count={watchlist.length} icon={<Eye className="text-indigo-400" size={14} />} defaultOpen={true} updated={lastUpdated} onToggleIgnore={() => toggleIgnoreSection('watchlist')} isIgnored={ignoredSections.has('watchlist')}>
+                  {loading && watchlist.length === 0 ? <SkeletonTable /> : (<StockTable data={watchlist} onRemove={(sym) => handleRemoveTicker(sym, 'watchlist')} isWatchlist={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('watchlist')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} />)}
+                </CollapsibleSection>
+
+                {(loading && market.length === 0) ? <SkeletonTable /> : market.length > 0 && (<CollapsibleSection title="Market Overview" icon={<BarChart2 className="text-slate-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('market')} isIgnored={ignoredSections.has('market')}><StockTable data={market} onRemove={handleRemoveTicker} isWatchlist={false} groupBySector={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} onToggleSectorIgnore={toggleIgnoreSector} ignoredStocks={ignoredStocks} ignoredSectors={ignoredSectors} sectionIgnored={ignoredSections.has('market')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} /></CollapsibleSection>)}
+            </>
         )}
 
-        <CollapsibleSection title="My Portfolio" count={portfolio.length} icon={<Briefcase className="text-emerald-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('portfolio')} isIgnored={ignoredSections.has('portfolio')}>
-          {loading && portfolio.length === 0 ? <SkeletonTable /> : (<StockTable data={portfolio} onRemove={(sym) => togglePortfolio(sym, true)} isPortfolio={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('portfolio')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} />)}
-        </CollapsibleSection>
+        {!isMomentum && (
+            <>
+                <CollapsibleSection title="Wheel Opportunities" count={wheelOpportunities.length} icon={<Activity className="text-indigo-400" size={14} />}>
+                    <div className="p-4 bg-indigo-500/5 border border-indigo-500/10 rounded-lg mb-4 text-xs text-indigo-300">
+                        <strong>Strategy:</strong> Sell Cash Secured Puts (CSP) on oversold high-quality stocks. Sell Covered Calls (CC) on overbought stocks you own.
+                    </div>
+                    {loading ? <SkeletonCards /> : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
+                            {wheelOpportunities.map(item => (
+                                <WheelSignalCard key={item.symbol} item={item} onLogTrade={handleLogWheelTrade} />
+                            ))}
+                        </div>
+                    )}
+                </CollapsibleSection>
 
-        <CollapsibleSection title="Watchlist" count={watchlist.length} icon={<Eye className="text-indigo-400" size={14} />} defaultOpen={true} updated={lastUpdated} onToggleIgnore={() => toggleIgnoreSection('watchlist')} isIgnored={ignoredSections.has('watchlist')}>
-          {loading && watchlist.length === 0 ? <SkeletonTable /> : (<StockTable data={watchlist} onRemove={(sym) => handleRemoveTicker(sym, 'watchlist')} isWatchlist={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('watchlist')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} />)}
-        </CollapsibleSection>
+                <CollapsibleSection title="Active Wheel Trades" count={wheelHistory.length} icon={<Briefcase className="text-emerald-400" size={14} />}>
+                    <WheelHistory history={wheelHistory} />
+                </CollapsibleSection>
+            </>
+        )}
 
-        {(loading && market.length === 0) ? <SkeletonTable /> : market.length > 0 && (<CollapsibleSection title="Market Overview" icon={<BarChart2 className="text-slate-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('market')} isIgnored={ignoredSections.has('market')}><StockTable data={market} onRemove={handleRemoveTicker} isWatchlist={false} groupBySector={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} onToggleSectorIgnore={toggleIgnoreSector} ignoredStocks={ignoredStocks} ignoredSectors={ignoredSectors} sectionIgnored={ignoredSections.has('market')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} /></CollapsibleSection>)}
       </main>
     </div>
   );
 }
 
+// ... (CollapsibleSection and SignalSubsection are assumed to be here, unchanged from previous versions) ...
 function CollapsibleSection({ title, count, icon, children, defaultOpen = true, updated, onToggleIgnore, isIgnored }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   return (

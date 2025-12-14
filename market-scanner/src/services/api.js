@@ -1,50 +1,68 @@
-import axios from 'axios';
+// src/services/api.js
 
+// Point to your Python Backend
 const API_URL = "http://127.0.0.1:8000";
 
-// 1. Read from the environment variable
-const API_KEY = process.env.REACT_APP_FINNHUB_API_KEY;
-
-// Safety Check (Optional but helpful)
-if (!API_KEY) {
-  console.warn("Missing Finnhub API Key. Search will not work. Check your .env file.");
-}
-
 export const api = {
-  scan: () => axios.get(`${API_URL}/scan`),
-  addTicker: (symbol, target) => axios.post(`${API_URL}/add`, { symbol, target }),
-  removeTicker: (symbol) => axios.post(`${API_URL}/remove`, { symbol }),
-  
-  // Portfolio
-  addToPortfolio: (symbol) => axios.post(`${API_URL}/portfolio/add`, { symbol }),
-  removeFromPortfolio: (symbol) => axios.post(`${API_URL}/portfolio/remove`, { symbol }),
-  
-  // Ignore
-  ignoreStock: (symbol) => axios.post(`${API_URL}/ignore/stock`, { symbol }),
-  ignoreSector: (sector) => axios.post(`${API_URL}/ignore/sector`, { sector }),
-  ignoreSection: (section) => axios.post(`${API_URL}/ignore/section`, { section }),
-  // NEW: Search for tickers using Finnhub
+  // --- SEARCH ---
   searchSymbols: async (query) => {
     if (!query) return [];
     try {
-      const response = await fetch(
-        `https://finnhub.io/api/v1/search?q=${query}&token=${API_KEY}`
-      );
-      const data = await response.json();
-      
-      // Finnhub returns { count: 10, result: [...] }
-      // We map it to match your app's format { symbol, name }
-      return data.result
-        .filter(item => !item.symbol.includes('.')) // Optional: Filter out non-US tickers if desired
-        .map(item => ({
-          symbol: item.displaySymbol,
-          name: item.description,
-        }))
-        .slice(0, 10); // Limit to top 10 results
+      const response = await fetch(`${API_URL}/search?q=${query}`);
+      if (!response.ok) throw new Error("Search failed");
+      return await response.json();
     } catch (error) {
-      console.error("Search failed:", error);
+      console.error(error);
       return [];
     }
   },
-};
 
+  // --- SCAN ---
+  scan: async (strategy = 'MOMENTUM') => {
+    try {
+      const response = await fetch(`${API_URL}/scan?strategy=${strategy}`);
+      if (!response.ok) throw new Error("Scan failed");
+      // Backend returns { data: [...], history: [...] } directly
+      const json = await response.json();
+      return { data: json }; 
+    } catch (error) {
+      console.error(error);
+      // Return empty structure on fail to prevent crash
+      return { data: { data: [], history: [], settings: { ignored_sections: [] } } };
+    }
+  },
+
+  // --- CRUD ACTIONS ---
+  addTicker: async (symbol, target) => {
+    await fetch(`${API_URL}/ticker`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, target })
+    });
+  },
+
+  removeTicker: async (symbol) => {
+    await fetch(`${API_URL}/ticker/${symbol}`, { method: 'DELETE' });
+  },
+
+  addToPortfolio: async (symbol) => {
+    await fetch(`${API_URL}/portfolio/${symbol}`, { method: 'POST' });
+  },
+
+  removeFromPortfolio: async (symbol) => {
+    await fetch(`${API_URL}/portfolio/${symbol}`, { method: 'DELETE' });
+  },
+
+  logWheelTrade: async (trade) => {
+    await fetch(`${API_URL}/wheel/log`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(trade)
+    });
+  },
+
+  // Mock ignore actions (unless you add backend endpoints for them)
+  ignoreStock: async (symbol) => { console.log("Ignored", symbol); },
+  ignoreSector: async (sector) => { console.log("Ignored Sector", sector); },
+  ignoreSection: async (section) => { console.log("Ignored Section", section); },
+};
