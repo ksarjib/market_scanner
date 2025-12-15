@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(
@@ -80,6 +81,26 @@ def fetch_quote(symbol):
     except Exception as e:
         logger.error(f"Error fetching {symbol}: {e}")
         return None
+
+# Simplify summarize_news to sort by datetime and return top 5 news
+def summarize_news(news_list):
+    # Sort news by datetime in descending order
+    sorted_news = sorted(news_list, key=lambda x: x.get('datetime', 0), reverse=True)
+
+    # Return the top 5 news items as they are
+    summarized_news = [
+        {
+            'title': news.get('headline', 'No Title'),
+            'summary': news.get('summary', ''),
+            'url': news.get('url', '#'),
+            'source': news.get('source', 'Unknown'),
+            'image': news.get('image', None),
+            'datetime': news.get('datetime', 0)  # Include datetime for context
+        }
+        for news in sorted_news[:5]
+    ]
+
+    return summarized_news
 
 # --- ROUTES ---
 
@@ -221,3 +242,74 @@ def log_trade(trade: TradeLog):
     WHEEL_HISTORY.insert(0, new_trade)
     logger.info(f"Trade logged: {new_trade}")
     return {"success": True}
+
+# --- NEWS ENDPOINT ---
+@app.get("/news/{symbol}")
+def get_company_news(symbol: str):
+    if not API_KEY: return {"summary": "API Key missing.", "feed": []}
+    try:
+        # 1. Fetch data from Finnhub (Last 7 days for relevance)
+        today = datetime.now().strftime("%Y-%m-%d")
+        last_week = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        
+        url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={last_week}&to={today}&token={API_KEY}"
+        r = requests.get(url)
+        data = r.json()
+        
+        if not isinstance(data, list):
+            return {"summary": "Unable to load news feed.", "feed": []}
+
+        # 2. Filter Logic
+        filtered_news = [item for item in data if is_relevant(item, symbol)]
+        
+        # 3. Generate Summary
+        summary_text = generate_summary(filtered_news, symbol)
+
+        # 4. Return Object
+        return {
+            "summary": summary_text,
+            "feed": filtered_news[:15]
+        }
+
+    except Exception as e:
+        print(f"Error fetching news for {symbol}: {e}")
+        return {"summary": "Error loading news summary.", "feed": []}
+    
+def is_relevant(news_item, symbol):
+    """
+    Returns True if the news item is specifically about the symbol.
+    """
+    headline = news_item.get('headline', '').upper()
+    summary = news_item.get('summary', '').upper()
+    sym = symbol.upper()
+    # Check if symbol is in headline or summary (with spacing to avoid partial matches like 'TSLA' in 'TSLAW')
+    if sym in headline or f" {sym} " in f" {summary} ": 
+        return True
+    return False
+
+def generate_summary(news_items, symbol):
+    """
+    Generates a synthetic summary paragraph from the top headlines.
+    """
+    if not news_items:
+        return f"No recent news found for {symbol}. Market activity appears quiet."
+    
+    # Take top 3 most relevant headlines
+    top_stories = news_items[:3]
+    headlines = [item.get('headline', '').strip() for item in top_stories]
+    
+    summary = f"Latest developments for {symbol}: "
+    
+    if len(headlines) >= 1:
+        summary += f"Reports indicate {headlines[0]}"
+        if not summary.endswith('.'): summary += "."
+        
+    if len(headlines) >= 2:
+        summary += f" In other news, {headlines[1]}"
+        if not summary.endswith('.'): summary += "."
+        
+    if len(headlines) >= 3:
+        summary += f" Traders are also monitoring reports that {headlines[2]}"
+        if not summary.endswith('.'): summary += "."
+        
+    return summary

@@ -186,6 +186,10 @@ const StockTable = ({
   onOpenChart,
   onOpenNews 
 }) => {
+  if (!data || !Array.isArray(data)) {
+    console.error("Invalid data passed to StockTable:", data);
+    return null; // Render nothing if data is invalid
+  }
 
   const safeData = (data && Array.isArray(data)) ? data : [];
 

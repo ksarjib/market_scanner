@@ -149,7 +149,6 @@ function App() {
 
   // --- FETCH ---
   const fetchData = useCallback(async () => {
-    // Only show loading spinner on empty state or major refresh
     if (data.length === 0) setLoading(true); 
     
     try {
@@ -215,7 +214,7 @@ function App() {
       setCurrentStrategy(strat);
       setIsStrategyOpen(false);
       setLoading(true);
-      setData([]); // Clear data to trigger skeleton loader
+      setData([]); 
       setTimeout(fetchData, 100);
   };
 
@@ -230,9 +229,7 @@ function App() {
         setLoading(true);
         if (target === 'portfolio') await api.addToPortfolio(symbol);
         else await api.addTicker(symbol, 'watchlist');
-        
         if (target === 'portfolio') await api.addTicker(symbol, 'portfolio');
-        
         await fetchData(); 
     } catch (e) { console.error(e); setLoading(false); }
   };
@@ -300,11 +297,21 @@ function App() {
   };
 
   const handleRateChange = (newRate) => {
-    console.log(`[APP] Timer changed to: ${newRate}s`);
     setRefreshRate(parseInt(newRate));
     setCountdown(newRate);
     setTimeout(fetchData, 100);
     setIsTimerOpen(false); 
+  };
+
+  // --- MODAL HANDLERS (MUTUAL EXCLUSION FIX) ---
+  const handleOpenChart = (symbol) => {
+      setViewingNewsTicker(null); // Close news if open
+      setSelectedStock(symbol);
+  };
+
+  const handleOpenNews = (symbol) => {
+      setSelectedStock(null); // Close chart if open
+      setViewingNewsTicker(symbol);
   };
 
   // --- DATA FILTERING ---
@@ -329,9 +336,25 @@ function App() {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 font-sans selection:bg-indigo-500/30 pb-20">
        
+      {/* FIXED MODAL RENDERING:
+          1. Added 'key' props to ensure AnimatePresence tracks them correctly.
+          2. Logic ensures only one state is active at a time.
+      */}
       <AnimatePresence>
-        {selectedStock && <ChartModal symbol={selectedStock} onClose={() => setSelectedStock(null)} />}
-        {viewingNewsTicker && <NewsModal symbol={viewingNewsTicker} onClose={() => setViewingNewsTicker(null)} />}
+        {selectedStock && (
+            <ChartModal 
+                key="chart-modal" 
+                symbol={selectedStock} 
+                onClose={() => setSelectedStock(null)} 
+            />
+        )}
+        {viewingNewsTicker && (
+            <NewsModal 
+                key="news-modal" 
+                symbol={viewingNewsTicker} 
+                onClose={() => setViewingNewsTicker(null)} 
+            />
+        )}
       </AnimatePresence>
 
       <nav className="sticky top-0 z-50 bg-[#020617]/95 backdrop-blur-md border-b border-slate-800/80 shadow-lg h-16">
@@ -430,26 +453,26 @@ function App() {
                   <CollapsibleSection title="Active Signals" count={activeSignals.length} icon={<Zap className="text-amber-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('signals')} isIgnored={ignoredSections.has('signals')}>
                     <SignalSubsection title="Priority Alerts (Voice Active)" icon={<Volume2 size={12} className="text-emerald-400"/>} data={activeSpoken} defaultOpen={true}>
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
-                        {activeSpoken.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)} onOpenNews={(sym) => setViewingNewsTicker(sym)} />))}
+                        {activeSpoken.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={handleOpenChart} onOpenNews={handleOpenNews} />))}
                       </div>
                     </SignalSubsection>
                     <SignalSubsection title="Silent Alerts" icon={<BellOff size={12} className="text-slate-400"/>} data={activeSilent} defaultOpen={true}>
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
-                        {activeSilent.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={() => setSelectedStock(item.symbol)} onOpenNews={(sym) => setViewingNewsTicker(sym)} />))}
+                        {activeSilent.map((item) => (<SignalCard key={item.symbol} item={item} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} isSpeaking={speakingTicker === item.symbol} onOpenChart={handleOpenChart} onOpenNews={handleOpenNews} />))}
                       </div>
                     </SignalSubsection>
                   </CollapsibleSection>
                 )}
 
                 <CollapsibleSection title="My Portfolio" count={portfolio.length} icon={<Briefcase className="text-emerald-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('portfolio')} isIgnored={ignoredSections.has('portfolio')}>
-                  {loading && portfolio.length === 0 ? <SkeletonTable /> : (<StockTable data={portfolio} onRemove={(sym) => togglePortfolio(sym, true)} isPortfolio={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('portfolio')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} />)}
+                  {loading && portfolio.length === 0 ? <SkeletonTable /> : (<StockTable data={portfolio} onRemove={(sym) => togglePortfolio(sym, true)} isPortfolio={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('portfolio')} onOpenChart={handleOpenChart} onOpenNews={handleOpenNews} />)}
                 </CollapsibleSection>
 
                 <CollapsibleSection title="Watchlist" count={watchlist.length} icon={<Eye className="text-indigo-400" size={14} />} defaultOpen={true} updated={lastUpdated} onToggleIgnore={() => toggleIgnoreSection('watchlist')} isIgnored={ignoredSections.has('watchlist')}>
-                  {loading && watchlist.length === 0 ? <SkeletonTable /> : (<StockTable data={watchlist} onRemove={(sym) => handleRemoveTicker(sym, 'watchlist')} isWatchlist={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('watchlist')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} />)}
+                  {loading && watchlist.length === 0 ? <SkeletonTable /> : (<StockTable data={watchlist} onRemove={(sym) => handleRemoveTicker(sym, 'watchlist')} isWatchlist={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} ignoredStocks={ignoredStocks} sectionIgnored={ignoredSections.has('watchlist')} onOpenChart={handleOpenChart} onOpenNews={handleOpenNews} />)}
                 </CollapsibleSection>
 
-                {(loading && market.length === 0) ? <SkeletonTable /> : market.length > 0 && (<CollapsibleSection title="Market Overview" icon={<BarChart2 className="text-slate-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('market')} isIgnored={ignoredSections.has('market')}><StockTable data={market} onRemove={handleRemoveTicker} isWatchlist={false} groupBySector={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} onToggleSectorIgnore={toggleIgnoreSector} ignoredStocks={ignoredStocks} ignoredSectors={ignoredSectors} sectionIgnored={ignoredSections.has('market')} onOpenChart={setSelectedStock} onOpenNews={(sym) => setViewingNewsTicker(sym)} /></CollapsibleSection>)}
+                {(loading && market.length === 0) ? <SkeletonTable /> : market.length > 0 && (<CollapsibleSection title="Market Overview" icon={<BarChart2 className="text-slate-400" size={14} />} defaultOpen={true} onToggleIgnore={() => toggleIgnoreSection('market')} isIgnored={ignoredSections.has('market')}><StockTable data={market} onRemove={handleRemoveTicker} isWatchlist={false} groupBySector={true} onTogglePortfolio={togglePortfolio} onToggleWatchlist={toggleWatchlist} onToggleIgnore={toggleIgnoreStock} onToggleSectorIgnore={toggleIgnoreSector} ignoredStocks={ignoredStocks} ignoredSectors={ignoredSectors} sectionIgnored={ignoredSections.has('market')} onOpenChart={handleOpenChart} onOpenNews={handleOpenNews} /></CollapsibleSection>)}
             </>
         )}
 
@@ -462,7 +485,20 @@ function App() {
                     {loading ? <SkeletonCards /> : (
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-1">
                             {wheelOpportunities.map(item => (
-                                <WheelSignalCard key={item.symbol} item={item} onLogTrade={handleLogWheelTrade} />
+                                <WheelSignalCard 
+                                    key={item.symbol} 
+                                    item={item} 
+                                    
+                                    // 1. Log Trade Handler
+                                    onLogTrade={handleLogWheelTrade}
+                                    
+                                    // 2. PASS THESE HANDLERS (Essential for the + menu to work)
+                                    onTogglePortfolio={togglePortfolio}
+                                    onToggleWatchlist={toggleWatchlist}
+                                    onToggleIgnore={toggleIgnoreStock}
+                                    onOpenChart={handleOpenChart}
+                                    onOpenNews={handleOpenNews} // <--- The News Handler
+                                />
                             ))}
                         </div>
                     )}
@@ -479,7 +515,7 @@ function App() {
   );
 }
 
-// ... (CollapsibleSection and SignalSubsection are assumed to be here, unchanged from previous versions) ...
+// ... Helper Components ...
 function CollapsibleSection({ title, count, icon, children, defaultOpen = true, updated, onToggleIgnore, isIgnored }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   return (
