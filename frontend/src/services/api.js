@@ -21,19 +21,16 @@ export const api = {
   scan: async (strategy = 'MOMENTUM') => {
     try {
       const response = await fetch(`${API_URL}/scan?strategy=${strategy}`);
-      if (!response.ok) throw new Error("Scan failed");
-      // Backend returns { data: [...], history: [...] } directly
-      const json = await response.json();
-      return { data: json }; 
+      if (!response.ok) throw new Error(`Scan failed with status ${response.status}`);
+      return await response.json();
     } catch (error) {
       console.error(error);
-      // Return empty structure on fail to prevent crash
-      return { data: { data: [], history: [], settings: { ignored_sections: [] } } };
+      return { data: [], history: [], settings: { ignored_sections: [] } };
     }
   },
 
   // --- CRUD ACTIONS ---
-  addTicker: async (symbol, target) => {
+  addTicker: async (symbol, target = 'watchlist') => {
     await fetch(`${API_URL}/ticker`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -69,7 +66,7 @@ export const api = {
       return await response.json();
     } catch (error) {
       console.error(`Error fetching news for ${symbol}:`, error);
-      return [];
+      return { summary: "Unable to load news.", feed: [] };
     }
   },
 
