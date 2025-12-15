@@ -154,9 +154,9 @@ function App() {
     try {
       console.log(`[APP] 📥 Fetching data... (Strategy: ${currentStrategy})`);
       const res = await api.scan(currentStrategy);
-      const rawData = res.data.data || [];
-      const historyData = res.data.history || [];
-      const settings = res.data.settings || {};
+      const rawData = res.data || [];
+      const historyData = res.history || [];
+      const settings = res.settings || {};
 
       console.log(`[APP] ✅ Data received: ${rawData.length} items`);
 
@@ -227,9 +227,7 @@ function App() {
     if (!symbol) return;
     try {
         setLoading(true);
-        if (target === 'portfolio') await api.addToPortfolio(symbol);
-        else await api.addTicker(symbol, 'watchlist');
-        if (target === 'portfolio') await api.addTicker(symbol, 'portfolio');
+        await api.addTicker(symbol, target);
         await fetchData(); 
     } catch (e) { console.error(e); setLoading(false); }
   };

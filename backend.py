@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # 1. Load Env Vars
 load_dotenv()
 API_KEY = os.getenv("FINNHUB_API_KEY")  # Ensure this is in your .env file
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "5"))
 
 app = FastAPI()
 
@@ -35,6 +36,11 @@ app.add_middleware(
 )
 
 # 3. IN-MEMORY DATABASE (Persists as long as server runs)
+def clamp(value, min_value=0, max_value=100):
+    """Utility to keep indicator values within realistic bounds."""
+    return max(min_value, min(max_value, value))
+
+
 MOCK_DB = [
     {"symbol": "AAPL", "company_name": "Apple Inc.", "price": 228.00, "is_buy": True, "status": "SWEET SPOT", "rsi": 42, "macd": 1.2, "volume": 50000000, "sector": "Technology", "is_in_portfolio": True, "is_watched": False, "reason": "Strong support bounce"},
     {"symbol": "TSLA", "company_name": "Tesla Inc.", "price": 380.00, "is_sell": True, "status": "OVERBOUGHT", "rsi": 82, "macd": -0.5, "volume": 80000000, "sector": "Consumer Cyclical", "is_in_portfolio": False, "is_watched": True, "reason": "RSI divergence detected"},
@@ -68,7 +74,7 @@ def fetch_quote(symbol):
         return None
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={API_KEY}"
-        r = requests.get(url)
+        r = requests.get(url, timeout=REQUEST_TIMEOUT)
         logger.info(f"Response for {symbol}: {r.status_code} - {r.text}")
         if r.status_code == 429:
             logger.warning(f"⚠️ Rate Limit hit for {symbol}")
@@ -115,10 +121,17 @@ def scan_market(strategy: str = "MOMENTUM"):
     
     for stock in MOCK_DB:
         time.sleep(0.1)
+        previous_price = stock.get('price') or 0
         quote = fetch_quote(stock['symbol'])
         if quote:
             stock['price'] = quote['c']
-            stock['rsi'] = max(0, min(100, stock['rsi'] + (1 if quote['c'] > stock['price'] else -1) + (random.random() - 0.5)))
+            price_direction = 0
+            if previous_price > 0:
+                if quote['c'] > previous_price:
+                    price_direction = 1
+                elif quote['c'] < previous_price:
+                    price_direction = -1
+            stock['rsi'] = clamp(stock['rsi'] + price_direction + (random.random() - 0.5))
             stock['volume'] = int(random.random() * 1000000 + 500000)
         else:
             stock['price'] = stock['price'] * (1 + (random.random() * 0.02 - 0.01))
@@ -158,7 +171,7 @@ def search_ticker(q: str):
         logger.warning("API_KEY is not set. Cannot perform search.")
         return []
     try:
-        r = requests.get(f"https://finnhub.io/api/v1/search?q={q}&token={API_KEY}")
+        r = requests.get(f"https://finnhub.io/api/v1/search?q={q}&token={API_KEY}", timeout=REQUEST_TIMEOUT)
         data = r.json()
         results = [
             {"symbol": item["displaySymbol"], "name": item["description"]}
@@ -192,7 +205,7 @@ def add_ticker(action: TickerAction):
 
     if action.target == "portfolio":
         existing["is_in_portfolio"] = True
-    else:
+    elif action.target == "watchlist":
         existing["is_watched"] = True
         
     logger.info(f"Ticker {sym} added to {action.target}")
@@ -253,7 +266,7 @@ def get_company_news(symbol: str):
         last_week = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         
         url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={last_week}&to={today}&token={API_KEY}"
-        r = requests.get(url)
+        r = requests.get(url, timeout=REQUEST_TIMEOUT)
         data = r.json()
         
         if not isinstance(data, list):
