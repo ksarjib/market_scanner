@@ -61,6 +61,18 @@ export const api = {
     });
   },
 
+  // --- NEWS ---
+  fetchNews: async (symbol) => {
+    try {
+      const response = await fetch(`${API_URL}/news/${symbol}`);
+      if (!response.ok) throw new Error("Failed to fetch news");
+      return await response.json();
+    } catch (error) {
+      console.error(`Error fetching news for ${symbol}:`, error);
+      return [];
+    }
+  },
+
   // Mock ignore actions (unless you add backend endpoints for them)
   ignoreStock: async (symbol) => { console.log("Ignored", symbol); },
   ignoreSector: async (sector) => { console.log("Ignored Sector", sector); },
